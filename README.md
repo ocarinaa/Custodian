@@ -32,8 +32,11 @@ This Python script scans a folder of your documents (`.pdf`, `.docx`, `.xlsx`, i
 
 ### Step 2: Set Up the Project
 
-1.  Download or `git clone` this project to your computer.
-2.  Open a terminal in the project folder.
+1.  Clone the repository to your computer:
+    ```bash
+    git clone https://github.com/umur957/Custodian.git
+    ```
+2.  Open a terminal in the newly created `Custodian` folder.
 3.  Install the required Python libraries:
     ```bash
     pip install -r requirements.txt
