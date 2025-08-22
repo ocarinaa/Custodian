@@ -1,0 +1,7 @@
+python-dotenv
+google-generativeai
+pytesseract
+Pillow
+pdf2image
+python-docx
+openpyxl
