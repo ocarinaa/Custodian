@@ -1,7 +1,9 @@
 python-dotenv
 google-generativeai
-pytesseract
+torch>=2.7.0
+transformers>=4.30.0
 Pillow
-pdf2image
+PyMuPDF
 python-docx
 openpyxl
+accelerate

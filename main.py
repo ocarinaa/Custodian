@@ -16,12 +16,13 @@ from typing import List, Dict
 
 # Required libraries (must be in requirements.txt)
 import google.generativeai as genai
-import pytesseract
+import torch
+from transformers import AutoModelForCausalLM, AutoProcessor
 from PIL import Image
-from pdf2image import convert_from_path
 import docx
 import openpyxl
 from dotenv import load_dotenv
+import fitz  # PyMuPDF for PDF processing
 
 # ==============================================================================
 # --- SETTINGS SECTION ---
@@ -35,15 +36,9 @@ load_dotenv()
 # Your Google Gemini API Key
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# Full path to the Tesseract OCR executable on your system
-# Example (Windows): TESSERACT_PATH = "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
-TESSERACT_PATH = os.getenv("TESSERACT_PATH")
-if TESSERACT_PATH and os.path.exists(TESSERACT_PATH):
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-
-# Full path to the Poppler 'bin' directory (for PDF processing on Windows)
-# Example: POPPLER_PATH = "C:\\path\\to\\poppler-22.04.0\\Library\\bin"
-POPPLER_PATH = os.getenv("POPPLER_PATH")
+# Full path to the dots.ocr model directory
+# Example: DOTS_OCR_MODEL_PATH = "C:\\path\\to\\DotsOCR"
+DOTS_OCR_MODEL_PATH = os.getenv("DOTS_OCR_MODEL_PATH", "./weights/DotsOCR")
 
 # The main folder containing the documents to be processed
 SOURCE_FOLDER = os.getenv("SOURCE_FOLDER")
@@ -82,43 +77,133 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 
+# --- DOTS.OCR INITIALIZATION ---
+dots_ocr_model = None
+dots_ocr_processor = None
+
+def initialize_dots_ocr():
+    """Initialize dots.ocr model and processor."""
+    global dots_ocr_model, dots_ocr_processor
+    
+    if dots_ocr_model is None:
+        try:
+            logging.info("Loading dots.ocr model...")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            dots_ocr_model = AutoModelForCausalLM.from_pretrained(
+                DOTS_OCR_MODEL_PATH,
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                device_map="auto" if device == "cuda" else None
+            )
+            
+            dots_ocr_processor = AutoProcessor.from_pretrained(
+                DOTS_OCR_MODEL_PATH,
+                trust_remote_code=True
+            )
+            
+            logging.info(f"dots.ocr model loaded successfully on {device}")
+            
+        except Exception as e:
+            logging.error(f"Failed to load dots.ocr model: {e}")
+            logging.error("Please ensure dots.ocr is properly installed and model weights are downloaded")
+            raise
+
 # --- CORE FUNCTIONS ---
 
+def extract_text_with_dots_ocr(image) -> str:
+    """Extract text from an image using dots.ocr model."""
+    try:
+        initialize_dots_ocr()
+        
+        # Prepare the prompt for OCR task
+        prompt = "Please perform OCR on this document and extract all the text content. Provide the extracted text in a clean, readable format."
+        
+        # Process the image and prompt
+        inputs = dots_ocr_processor(
+            text=prompt,
+            images=image,
+            return_tensors="pt"
+        )
+        
+        # Move inputs to the same device as the model
+        device = next(dots_ocr_model.parameters()).device
+        inputs = {k: v.to(device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        
+        # Generate response
+        with torch.no_grad():
+            outputs = dots_ocr_model.generate(
+                **inputs,
+                max_new_tokens=4096,
+                do_sample=False,
+                temperature=0.0
+            )
+        
+        # Decode the response
+        response = dots_ocr_processor.decode(outputs[0], skip_special_tokens=True)
+        
+        # Extract the generated text (remove the prompt part)
+        if prompt in response:
+            response = response.replace(prompt, "").strip()
+        
+        return response
+        
+    except Exception as e:
+        logging.error(f"dots.ocr processing failed: {e}")
+        return ""
+
 def extract_text_from_file(file_path: str) -> str:
-    """Extracts text from various file formats using the most efficient method."""
+    """Extracts text from various file formats using dots.ocr for images/PDFs and direct extraction for Office docs."""
     ext = os.path.splitext(file_path)[1].lower()
     text = ""
+    
     try:
         if ext == '.pdf':
-            # Use poppler_path if provided in .env
-            poppler_kwargs = {'poppler_path': POPPLER_PATH} if POPPLER_PATH else {}
-            images = convert_from_path(file_path, **poppler_kwargs)
-            for img in images:
-                text += pytesseract.image_to_string(img, lang='eng+deu+tur') + "\n"
+            # Convert PDF pages to images and process with dots.ocr
+            doc = fitz.open(file_path)
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                # Render page as image (200 DPI for better quality)
+                pix = page.get_pixmap(matrix=fitz.Matrix(200/72, 200/72))
+                img_data = pix.tobytes("png")
+                
+                # Convert to PIL Image
+                from io import BytesIO
+                image = Image.open(BytesIO(img_data))
+                
+                # Extract text using dots.ocr
+                page_text = extract_text_with_dots_ocr(image)
+                if page_text:
+                    text += page_text + "\n"
+            
+            doc.close()
+            
         elif ext in ['.png', '.jpg', '.jpeg']:
-            text = pytesseract.image_to_string(Image.open(file_path), lang='eng+deu+tur')
+            # Process image directly with dots.ocr
+            image = Image.open(file_path)
+            text = extract_text_with_dots_ocr(image)
+            
         elif ext == '.docx':
+            # Direct text extraction for DOCX files
             doc = docx.Document(file_path)
             text = "\n".join([para.text for para in doc.paragraphs])
+            
         elif ext == '.xlsx':
+            # Direct text extraction for Excel files
             workbook = openpyxl.load_workbook(file_path)
             full_text = []
             for sheet in workbook.worksheets:
                 for row in sheet.iter_rows():
                     for cell in row:
-                        if cell.value: full_text.append(str(cell.value))
+                        if cell.value: 
+                            full_text.append(str(cell.value))
             text = "\n".join(full_text)
-    except pytesseract.TesseractNotFoundError:
-        logging.critical("Tesseract is not installed or not in your PATH. Please check the TESSERACT_PATH in your .env file.")
-        raise
+            
     except FileNotFoundError:
         logging.error(f"File not found: '{file_path}'")
     except Exception as e:
-        # Catching pdf2image/poppler errors specifically
-        if "Poppler" in str(e):
-            logging.error(f"Poppler error processing '{os.path.basename(file_path)}'. Is POPPLER_PATH set correctly in .env? Error: {e}")
-        else:
-            logging.error(f"Error reading '{os.path.basename(file_path)}': {e}")
+        logging.error(f"Error processing '{os.path.basename(file_path)}': {e}")
+    
     return text.strip()
 
 def analyze_text_with_gemini(text: str) -> Dict:
@@ -189,8 +274,14 @@ def sanitize_filename(name: str) -> str:
 def main():
     """Main script execution flow."""
     # Check for essential settings
-    if not all([GOOGLE_API_KEY, TESSERACT_PATH, SOURCE_FOLDER, RENAMED_FOLDER, NEEDS_REVIEW_FOLDER]):
+    if not all([GOOGLE_API_KEY, DOTS_OCR_MODEL_PATH, SOURCE_FOLDER, RENAMED_FOLDER, NEEDS_REVIEW_FOLDER]):
         logging.critical("CRITICAL ERROR: A required setting is missing! Please check your .env file.")
+        return
+    
+    # Check if dots.ocr model path exists
+    if not os.path.exists(DOTS_OCR_MODEL_PATH):
+        logging.critical(f"dots.ocr model not found at: {DOTS_OCR_MODEL_PATH}")
+        logging.critical("Please run: python3 tools/download_model.py to download the model weights")
         return
 
     # Create target directories if they don't exist
