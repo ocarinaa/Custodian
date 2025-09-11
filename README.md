@@ -94,7 +94,7 @@
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/custodian-enhanced.git
+git clone https://github.com/umur957/custodian-enhanced.git
 cd custodian-enhanced
 ```
 
