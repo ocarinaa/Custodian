@@ -565,3 +565,6 @@ For enterprise deployments and custom solutions, contact us for professional sup
   <img src="https://img.shields.io/badge/Powered%20by-AI-purple.svg" alt="Powered by AI">
   <img src="https://img.shields.io/badge/Enterprise-Ready-brightgreen.svg" alt="Enterprise Ready">
 </p>
+
+
+AUTHOR: OOCARINAA
